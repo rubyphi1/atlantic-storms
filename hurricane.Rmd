@@ -1,0 +1,452 @@
+---
+title: "Draft Report"
+output: word_document
+date: "2022-11-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# load pacman package - once only
+library(forecast)
+library(pacman) #package manager
+library(corrplot)
+library(leaflet)
+library(ggplot2)
+library(dplyr)
+library(factoextra)
+library(cluster)
+library(pls)
+library(randomForest)
+library(Metrics)
+library(vip)
+library("lubridate")
+pacman::p_load(tidyverse)
+```
+# Introduction
+- Project : Investigate the storm strength in the Atlantic
+- A Dataset about 30 years of the storm in the Atlantic
+- Scientific goal : Understand the factors that make hurricane strong and predict the storm strength
+
+# Load and clean the data
+- Example : Wind speed 
+- Process all other variables (day, month, year, pressure, latitude, etc.) in the same way.
+```{r}
+x=1:3700 # Initilize a vector contains the column names
+col_names <- paste(x) 
+wind_speed <- read.csv("vstore.csv",header=FALSE, col.names = col_names)
+dim(wind_speed) #Check dimension of all files
+```
+
+```{r,include=FALSE}
+days <- read.csv("daystore.csv",header=FALSE, col.names = col_names)
+months <- read.csv("monthstore.csv",header=FALSE, col.names = col_names)
+years <- read.csv("yearstore.csv",header=FALSE, col.names = c("years"))
+hours <- read.csv("hourstore.csv",header=FALSE, col.names = col_names)
+lat <- read.csv("latstore.csv",header=FALSE, col.names = col_names)
+long <- read.csv("longstore.csv",header=FALSE, col.names = col_names)
+pressure <- read.csv("pstore.csv",header=FALSE, col.names = col_names)
+#Transpose the pressure matrix
+pressure <- data.frame(t(pressure[-1]))
+wind_shear_strength <- read.csv("shearstore.csv",header=FALSE, col.names = col_names)
+potential_wind_strength <- read.csv("vpstore.csv",header=FALSE, col.names = col_names)
+```
+
+```{r, include = FALSE}
+#Check dimension
+dim(days)
+dim(months)
+dim(years)
+dim(hours)
+dim(lat)
+dim(long)
+dim(pressure)
+dim(wind_shear_strength)
+dim(potential_wind_strength)
+```
+
+```{r, include=FALSE}
+#Replace '0' values with NA
+hours [hours == 0] <- NA
+months [months == 0 ]<- NA
+lat [lat ==0 ] <- NA
+long [long ==0 ] <- NA
+wind_shear_strength [wind_shear_strength==0 ] <- NA
+potential_wind_strength[potential_wind_strength==0 ] <- NA
+pressure[pressure==0 ] <- NA 
+```
+# Find the average,maximum, minimum value of each variable
+- Replace '0' values with NA : Not affect the mean calculation 
+```{r , include = TRUE}
+wind_speed[wind_speed ==0 ] <- NA 
+colMax <- function(data) sapply(data, max, na.rm = TRUE)
+colMin <- function(data) sapply(data, min, na.rm = TRUE)
+max_windspeed <- colMax (wind_speed)
+min_windspeed <- colMin (wind_speed)
+avg_windspeed <- colMeans(wind_speed, na.rm = TRUE)
+```
+```{r, include = FALSE}
+avg_months <- data.frame(round(colMeans(months, na.rm = TRUE),digits = 0))
+avg_potential_wind <- colMeans(potential_wind_strength, na.rm = TRUE)
+max_pressure <- colMax (pressure)
+avg_pressure <- colMeans(pressure, na.rm = TRUE)
+avg_shear <- colMeans(wind_shear_strength, na.rm = TRUE)
+avg_lat <- colMeans(lat, na.rm = TRUE)
+avg_long <- colMeans(long, na.rm = TRUE)
+```
+# Create new dataframe
+```{r, include = TRUE}
+hurricane_df <- tibble (col_names,      years,         avg_months, 
+                        max_windspeed,  avg_windspeed, min_windspeed,
+                        max_pressure,   avg_pressure,  avg_potential_wind, 
+                        avg_lat,        avg_long,      avg_shear)
+```
+# Summary data frame
+```{r, echo = FALSE}
+colnames(hurricane_df) <- c("storm_ID","years","avg_month", "max_windSpeed","avg_windSpeed", "min_windSpeed","max_Pressure","avg_Pressure","avg_potentialWind","avg_Latitude", "avg_Longitude", "avg_shear")
+hurricane_df
+```
+# Exploratory Data Analysis
+- The objective of EDA is:
+- Observe the relationships between each variables
+- Identify which variable is more important than the others 
+- Contribute more in the later stage of research in rapid intensification.
+- Choose a good first model, investigate and improve your model.
+
+# Plot clustered correlations using summary df
+Wind speed and pressure being the major features of a storm, it is worth to explore their relationship
+```{r, fig.cap="Figure 1.Correlation plot between all variables", warning = FALSE}
+hurricane_matrix <- data.matrix(hurricane_df[,2:12], rownames.force = NA)
+M<-cor(hurricane_matrix)
+corrplot::corrplot(M,
+        order = "AOE",
+        method = "circle", 
+        type="upper",  # The correlation matrix can be reordered according to the correlation coefficient. This is important to identify the hidden structure and pattern in the #matrix. 
+         tl.srt=45, #text label string rotation 
+        )
+```
+# Correlation graph between 2 variables
+```{r,  fig.cap="Figure 2. The relationship between Minimum Wind Speed and Maximum Pressure"}
+ggplot(data = hurricane_df, aes(x =min_windSpeed , y =  max_Pressure, color = years)) +
+    geom_jitter(alpha = 0.3)+
+  labs(y = "Max Pressure" , x = "Min Wind Speed")
+```
+
+```{r,echo = FALSE, fig.cap = "Figure 3. The relationship between Average Wind Speed and Average Pressure" }
+ggplot(data = hurricane_df, aes(x = avg_windSpeed, y =  avg_Pressure, color = years)) +
+    geom_jitter(alpha = 0.3)+
+    labs(y = "Average Pressure", x = "Average Wind Speed")
+```
+
+```{r,echo = FALSE, fig.cap = "Figure 5. The relationship between Month and Average Wind Speed"}
+ggplot(data = hurricane_df, aes(x = as.factor(avg_month), y =  avg_windSpeed, color = years)) +
+    geom_jitter(alpha = 0.3)+
+    labs(y = "Average Wind Speed", x = "Month")
+```
+
+
+
+
+# Storm active time
+Assume that if the storms die off, their windspeed is 0
+```{r}
+active_time = as.numeric(colSums(!is.na(wind_speed)))
+active_time_df = as.data.frame(active_time)
+hurricane_df["active_time"] = active_time
+```
+
+The average of active time of the storms are around 120 hours
+```{r, fig.cap = "Figure 10. Box plot of active time"}
+active_time_boxplot <- ggplot(hurricane_df, aes(y=active_time)) + 
+            geom_boxplot() + 
+            theme( axis.text.x=element_blank(),
+            axis.ticks.x=element_blank())
+active_time_boxplot 
+```
+
+# Long lasting storm
+
+```{r, fig.cap = "Figure 12. The relationship between Average  Wind Speed and Average Pressure of Long Lasting Storms" }
+long_last_storm <- filter(hurricane_df , active_time > 120)
+colors <-c("Long-lasting Storm" = "blue")
+ggplot(data = hurricane_df, aes(x = avg_windSpeed, y =  avg_Pressure)) +
+    geom_point()+
+    geom_point(data = long_last_storm ,aes(avg_windSpeed, y =  avg_Pressure, color = "Long-lasting Storm"))+
+    scale_color_manual(values = colors) +
+    labs(y = "Average Pressure", x = "Average Wind Speed")
+```
+
+Long lasting  storm usually occurs in July to Oct!
+
+```{r,echo = FALSE, , fig.cap = "Figure 13. The relationship between Month and Average Wind Speed of Long Lasting Storms"}
+colors <-c("Long-lasting Storm" = "blue")
+ggplot(data = hurricane_df, aes(x = as.factor(avg_month), y =  avg_windSpeed)) +
+    geom_point()+
+    geom_point(data = long_last_storm ,aes(x = as.factor(avg_month), y =  avg_windSpeed , color = "Long-lasting Storm"))+
+    scale_color_manual(values = colors) +
+    labs(y = "Average Wind Speed", x = "Month" , color = "Legend")
+```
+
+
+# Tracking the numbers of strong stroms every year
+Create data frame for each type of storms
+```{r}
+strong_storm <- filter(hurricane_df , max_windSpeed > 70)
+normal_storm <- filter(hurricane_df , max_windSpeed > 50, max_windSpeed < 70)
+weak_storm  <- filter(hurricane_df , max_windSpeed < 50)
+```
+
+
+```{r,echo = FALSE, fig.cap = "Figure 15. The relationship between Month and Average Wind Speed of Strong, Normal and Weak Storms"}
+colors <- c("Weak Storm" = "black", "Normal Storm" = "blue", "Strong Storm" = "red") 
+ggplot() +
+    geom_point(data = weak_storm, aes(x = as.factor(avg_month), y =  avg_windSpeed, color = "Weak Storm"))+
+    geom_point(data = normal_storm ,aes(x = as.factor(avg_month), y =  avg_windSpeed, color = "Normal Storm"))+
+    geom_point(data = strong_storm ,aes(x = as.factor(avg_month), y =  avg_windSpeed, color = "Strong Storm"))+
+    scale_color_manual(values = colors) +
+    labs(y = "Average Wind Speed", x = "Month", color = "Legend") 
+```
+
+
+# Modelling to understand the data
+## Linear Model
+# https://www.datacamp.com/tutorial/linear-regression-R
+#https://www.scribbr.com/statistics/linear-regression-in-r/
+#https://www.machinelearningplus.com/machine-learning/complete-introduction-linear-regression-r/
+```{r}
+mdl1 <- lm(avg_windSpeed ~ avg_month + max_Pressure + avg_Pressure + avg_potentialWind + avg_Latitude + avg_Longitude + avg_shear + active_time , data = hurricane_df)
+summary(mdl1)
+```
+
+# Adjust the linear model
+```{r, echo = FALSE}
+mdl2 <- lm(avg_windSpeed ~ max_Pressure+ avg_Pressure + avg_potentialWind +active_time, data = hurricane_df)
+summary(mdl2)
+```
+
+# Prepare Train and Test data
+```{r}
+#https://www.machinelearningplus.com/machine-learning/complete-introduction-linear-regression-r/
+# Create Training and Test data -
+set.seed(100)  # setting seed to reproduce results of random sampling
+train_index <- sample(1:nrow(hurricane_df), 0.8*nrow(hurricane_df))  # row indices for training data
+train_data <- hurricane_df[train_index, ]  # model training data
+test_data  <- hurricane_df[-train_index, ]   # test data
+```
+
+# Build the model on training data
+```{r}
+lmMod <- lm(avg_windSpeed ~ max_Pressure+ avg_Pressure + avg_potentialWind +active_time, data = train_data)  # build the model
+lm_predict <- predict(lmMod, test_data)  # predict the wind speed
+#calculate RMSE
+rmse_lm <- rmse (lm_predict,test_data$avg_windSpeed )
+rmse_lm
+```
+
+
+
+
+
+# Random Forest Regression
+#https://hackernoon.com/random-forest-regression-in-r-code-and-interpretation
+#https://www.geeksforgeeks.org/random-forest-approach-for-regression-in-r-programming/
+#https://www.listendata.com/2014/11/random-forest-with-r.html
+```{r, include = FALSE}
+mtry <- tuneRF(hurricane_df[-1],hurricane_df$avg_windSpeed, ntreeTry=700,
+               stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+print(mtry)
+print(best.m)
+```
+```{r}
+set.seed(100)
+#Fitting Random Forest model
+rf <- randomForest(avg_windSpeed ~ . , data = hurricane_df, mtry=6, ntree=700, importance=TRUE)
+rf
+```
+
+# Visualize variable importance
+```{r, fig.cap = "Figure 19. Variable importance"}
+vip(rf) 
+```
+
+# Make predictions on a test set and calculate RMSE
+```{r}
+rf1<- randomForest(avg_windSpeed ~ active_time+ avg_Pressure ,mtry = 2, data = train_data, ntree=700, keep.forest=TRUE, importance=TRUE)
+rf1
+rf_pred <- predict(rf1, newdata = test_data)
+rmse_rf = rmse(rf_pred, test_data$avg_windSpeed)
+rmse_rf
+```
+
+# Research Question (Predict wind strength)
+# Create a dataframe consist of strong storms only
+```{r}
+strong_storm_ID = list()
+for(i in 1:nrow(strong_storm)){
+  strong_storm_ID[i] = strong_storm[i,1]
+}
+strong_wind = wind_speed[,as.numeric(unlist(strong_storm_ID))] # Each column is each storm
+strong_hour = hours[,as.numeric(unlist(strong_storm_ID))]
+strong_years = years[as.numeric(unlist(strong_storm_ID)),]
+strong_day = days[,as.numeric(unlist(strong_storm_ID)),]
+strong_month = months[,as.numeric(unlist(strong_storm_ID))]
+strong_storm_df = tibble(strong_years,t(strong_wind))
+colnames(strong_storm_df) <- c("years","wind_Speed")
+```
+
+# Counting the number of strong storms each year
+```{r, fig.cap = "Figure 20. Number of strong storms of each year"}
+strong_storm_count = strong_storm_df %>% count(years)
+plot(strong_storm_count, type="o", lwd=1.5, xlab="Years", ylab="Count", main="Number of strong storms each year") 
+```
+
+```{r, fig.cap = "Figure 21. Boxplot of Average Wind Speed of each year of Strong Storms"}
+boxplot(avg_windSpeed ~ as.factor(years), ylab = " Average Wind Speed", xlab = "Year", las = 2, data = strong_storm)
+
+```
+
+# Using data of the first storm to do prediction
+```{r}
+strong_storm_ID = list()
+for(i in 1:nrow(strong_storm)){
+  strong_storm_ID[i] = strong_storm[i,1]
+}
+strong_wind = wind_speed[,as.numeric(unlist(strong_storm_ID))] # Each column is each storm
+# Store data of the strong storm 1
+wind1 <- strong_wind[,3] 
+# Find the 1st index where wind speed > 70
+head_index <- which.max(wind1>70)
+# Find the 1st index where wind speed < 70 after a hurricane forms
+tail_index <- which.max( wind1[-1:-head_index] < 70) 
+
+month <- strong_month[,1]
+day<- strong_day[,1]
+hour <- strong_hour[,1]
+year <- strong_years[1]
+storm1 <- data.frame(wind1)
+colnames(storm1 ) <- c("wind")
+#Merging date and time of the wind speed
+date <- as.Date(with(storm1, paste(year, month, day,sep="-")), "%Y-%m-%d")
+date_time <-  date+hours(hour)
+storm1$date_time <- as.character(date_time)
+storm1[1:5,]
+```
+
+```{r}
+#https://www.pluralsight.com/guides/time-series-forecasting-using-r
+storm1_train = storm1[1:head_index-1,]
+storm1_test = storm1[-c(1:head_index-1),]
+storm1_test= storm1_test[complete.cases(storm1_test), ] # Keep only the complete rows
+```
+
+```{r}
+#Fitting ARIMA model
+arima_model <- auto.arima(storm1_train$wind)
+#Predicting wind speed
+fore_arima = forecast::forecast(arima_model, h=nrow(storm1_test))
+df_arima = as.data.frame(fore_arima)
+storm1_test$arima = df_arima$`Point Forecast`
+#Calculate MAPE
+mape(storm1_test$wind, storm1_test$arima) 
+storm1_test
+```
+
+`
+
+
+```{r}
+colors <- c("Actual value" = "Blue", "Predicted Value" = "Red")
+ggplot(storm1_test[1:6,], aes(x= date_time, group =1) ) +
+    geom_line(aes(y =  wind, color = "Actual value"),size = 0.8)+
+    geom_line(aes(y =  arima, color = "Predicted Value"),size = 0.8)+
+    labs(y = "Wind Speed", x = "Date and Time", color= "Legend") + 
+    scale_color_manual(values = colors) +
+    ylim(60, 90) +
+    theme(axis.text.x = element_text(angle = 60, hjust = 1))
+    
+    
+```
+
+i=1
+wind = c()
+month = c()
+day = c()
+hour = c()
+year = c()
+
+for (i in 1:10) {
+  print(i)
+  speed <- strong_wind[,i]
+  wind<-c(wind,speed)
+  # Find the 1st index where wind speed > 70
+  head_index <- which.max(speed>70)
+  tail_index <- which.max(speed[-1:-head_index] < 70) 
+  month <- c(month, strong_month[,i])
+  day<- c(day,strong_day[,i])
+  hour <- c(hour,strong_hour[,i])
+  year <- c(year,strong_years[i])
+}
+  storm <- data.frame(wind) 
+  
+  colnames(storm ) <- c("wind") 
+  #Merging date and time of the wind speed
+  date <- as.Date(with(storm, paste(year, month, day,sep="-")), "%Y-%m-%d")
+  date_time <- date + hours(hour)
+  storm$date_time <- date_time
+  # Prepare Train and Test Data Set
+  storm_train = storm[1:head_index-1,]
+  storm_test = storm[head_index : (head_index+ tail_index),]
+  storm_test= storm_test[complete.cases(storm_test), ] # Keep only the complete rows
+  
+  # Perform model fitting
+  arima_model <- auto.arima(storm_train$wind)
+  
+   #Perform prediction and calculate MAPE
+
+  arima_mdl = forecast::forecast(arima_model, h=nrow(storm_test))
+  arima_df = as.data.frame(arima_mdl)
+  storm_test$arima = arima_df $`Point Forecast`
+```
+
+# For loop to go through all the storms
+{r, include = FALSE}
+# A list to store mape value
+mape_list = list()
+i=1
+for (i in 1:ncol(strong_wind)) 
+{
+  
+  wind <- strong_wind[, i]
+
+  # Find the 1st index where wind speed > 70
+  head_index <- which.max(wind>70)
+  tail_index <- which.max( wind[-1:-head_index] < 70
+  ) 
+  month <- strong_month[,i]
+  day<- strong_day[,i]
+  hour <- strong_hour[,i]
+  year <- strong_years[i]
+  storm <- data.frame(wind) 
+  colnames(storm ) <- c("wind") 
+  #Merging date and time of the wind speed
+  date <- as.Date(with(storm, paste(year, month, day,sep="-")), "%Y-%m-%d")
+  date_time <- date + hours(hour)
+  storm$date_time <- date_time
+  # Prepare Train and Test Data Set
+  storm_train = storm[1:head_index-1,]
+  storm_test = storm[head_index : (head_index+ tail_index),]
+  storm_test= storm_test[complete.cases(storm_test), ] # Keep only the complete rows
+  
+  # Perform model fitting
+  arima_model <- auto.arima(storm_train$wind)
+  
+   #Perform prediction and calculate MAPE
+
+  arima_mdl = forecast::forecast(arima_model, h=nrow(storm_test))
+  arima_df = as.data.frame(arima_mdl)
+  storm_test$arima = arima_df $`Point Forecast`
+  mape_list <- append(mape_list,mape(storm_test$wind, storm_test$arima))
+}
+mean(as.numeric(mape_list))
+
+
